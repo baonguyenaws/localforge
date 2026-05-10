@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getProject } from "@/lib/projects";
 import { getProjectEffectiveSettings } from "@/lib/settings";

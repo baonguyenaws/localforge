@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { CelebrationScreen } from "./celebration-screen";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
+import { FileTree } from "@/components/forge/file-tree";
 
 /**
  * Client wrapper around the celebration screen + kanban for a project whose
@@ -44,7 +45,12 @@ export function CompletedProjectView({
             Show celebration
           </button>
         </div>
-        <KanbanBoard projectId={projectId} />
+        <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+          <FileTree projectId={projectId} />
+          <div style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
+            <KanbanBoard projectId={projectId} />
+          </div>
+        </div>
       </div>
     );
   }

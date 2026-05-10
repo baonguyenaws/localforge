@@ -84,6 +84,60 @@ function formatLogTime(iso: string): string {
   });
 }
 
+/** Cached version of formatLogTime so repeated renders don't re-parse dates. */
+const _logTimeCache = new Map<string, string>();
+function cachedFormatLogTime(iso: string): string {
+  if (_logTimeCache.has(iso)) return _logTimeCache.get(iso)!;
+  const result = formatLogTime(iso);
+  _logTimeCache.set(iso, result);
+  return result;
+}
+
+/** Maximum number of log entries rendered in the dialog to keep DOM lean. */
+const LOGS_DISPLAY_LIMIT = 300;
+
+/** Memoised single log row — avoids full list re-render on every poll tick. */
+const LogItem = React.memo(function LogItem({ log }: { log: AgentLogEntry }) {
+  return (
+    <li
+      key={log.id}
+      data-testid={`feature-detail-log-${log.id}`}
+      data-message-type={log.messageType}
+      className="flex flex-col gap-1"
+    >
+      <div className="flex items-start gap-2">
+        <span className="shrink-0 text-muted-foreground">
+          {cachedFormatLogTime(log.createdAt)}
+        </span>
+        <span
+          className={`shrink-0 rounded px-1.5 py-0 text-[10px] uppercase ${logBadgeClass(
+            log.messageType,
+          )}`}
+        >
+          {log.messageType}
+        </span>
+        <span className="break-words text-foreground">{log.message}</span>
+      </div>
+      {log.screenshotPath && (
+        <a
+          href={resolveScreenshotUrl(log.screenshotPath)}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`feature-detail-log-screenshot-${log.id}`}
+          className="ml-16 block w-fit overflow-hidden rounded border border-border bg-background/40 p-1 hover:border-fuchsia-500/60"
+        >
+          <img
+            src={resolveScreenshotUrl(log.screenshotPath)}
+            alt={`Screenshot for log ${log.id}`}
+            className="max-h-48 w-auto max-w-full"
+            loading="lazy"
+          />
+        </a>
+      )}
+    </li>
+  );
+});
+
 /**
  * Modal for viewing and editing a single feature.
  *
@@ -254,14 +308,13 @@ export function FeatureDetailDialog({
 
   /**
    * Keep the agent-activity log section live while the dialog is open —
-   * otherwise you'd have to close and reopen the modal to see new log
-   * lines stream in during an active coding session. Poll every 2s and
-   * merge by id so the list grows without flicker. Stops when the dialog
-   * closes or the feature changes (the main effect above tears down the
-   * `logs` state then).
+   * only poll when the feature is actively in_progress (new logs expected).
+   * Poll every 5 s instead of 2 s to reduce constant re-renders.
    */
   React.useEffect(() => {
     if (!open || featureId == null) return;
+    // Only poll when the feature is actively being worked on.
+    if (feature && feature.status !== "in_progress") return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -286,12 +339,12 @@ export function FeatureDetailDialog({
         // Swallow transient failures — the next tick will retry.
       }
     };
-    const intervalId = window.setInterval(tick, 2000);
+    const intervalId = window.setInterval(tick, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [open, featureId]);
+  }, [open, featureId, feature?.status]);
 
   const candidateDeps = React.useMemo(() => {
     if (!feature) return [] as DetailFeature[];
@@ -538,6 +591,7 @@ export function FeatureDetailDialog({
         if (!o && !saving) onOpenChange(false);
       }}
       labelledBy="feature-detail-title"
+      className="max-w-3xl"
     >
       <DialogCloseButton onClick={() => onOpenChange(false)} />
       <div className="max-h-[85vh] overflow-y-auto">
@@ -890,52 +944,14 @@ export function FeatureDetailDialog({
                       data-testid="feature-detail-logs-list"
                       className="max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
                     >
+                      {logs.length > LOGS_DISPLAY_LIMIT && (
+                        <p className="mb-1 text-[10px] text-muted-foreground">
+                          Showing last {LOGS_DISPLAY_LIMIT} of {logs.length} entries.
+                        </p>
+                      )}
                       <ul className="space-y-1">
-                        {logs.map((log) => (
-                          <li
-                            key={log.id}
-                            data-testid={`feature-detail-log-${log.id}`}
-                            data-message-type={log.messageType}
-                            className="flex flex-col gap-1"
-                          >
-                            <div className="flex items-start gap-2">
-                              <span className="shrink-0 text-muted-foreground">
-                                {formatLogTime(log.createdAt)}
-                              </span>
-                              <span
-                                className={`shrink-0 rounded px-1.5 py-0 text-[10px] uppercase ${logBadgeClass(
-                                  log.messageType,
-                                )}`}
-                              >
-                                {log.messageType}
-                              </span>
-                              <span className="break-words text-foreground">
-                                {log.message}
-                              </span>
-                            </div>
-                            {log.screenshotPath && (
-                              /* Feature #96/#79: inline thumbnail of the
-                                 screenshot captured by the Playwright run.
-                                 Uses the same resolver as the gallery so the
-                                 two views share one code path for stripping
-                                 the leading `screenshots/` segment before
-                                 hitting the /api/screenshots route. */
-                              <a
-                                href={resolveScreenshotUrl(log.screenshotPath)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                data-testid={`feature-detail-log-screenshot-${log.id}`}
-                                className="ml-16 block w-fit overflow-hidden rounded border border-border bg-background/40 p-1 hover:border-fuchsia-500/60"
-                              >
-                                <img
-                                  src={resolveScreenshotUrl(log.screenshotPath)}
-                                  alt={`Screenshot for log ${log.id}`}
-                                  className="max-h-48 w-auto max-w-full"
-                                  loading="lazy"
-                                />
-                              </a>
-                            )}
-                          </li>
+                        {logs.slice(-LOGS_DISPLAY_LIMIT).map((log) => (
+                          <LogItem key={log.id} log={log} />
                         ))}
                       </ul>
                     </div>

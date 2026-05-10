@@ -21,35 +21,60 @@ import * as schema from "./schema";
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "localforge.db");
 const DB_PATH = process.env.LOCALFORGE_DB_PATH || DEFAULT_DB_PATH;
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+// Lazy singleton — do NOT open the database at module evaluation time so that
+// Next.js can import this module during the build step without a real SQLite
+// file being present.
+let _sqlite: Database.Database | null = null;
+let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
 
-const sqlite = new Database(DB_PATH);
-sqlite.pragma("journal_mode = WAL");
-sqlite.pragma("foreign_keys = ON");
+function getSqlite(): Database.Database {
+  if (!_sqlite) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    _sqlite = new Database(DB_PATH);
+    _sqlite.pragma("journal_mode = WAL");
+    _sqlite.pragma("foreign_keys = ON");
 
-// Keep normal dev output quiet. SQL logging is still available when debugging
-// database behavior by setting LOCALFORGE_LOG_SQL=1 (or true).
-const shouldLogSql =
-  process.env.LOCALFORGE_LOG_SQL === "1" ||
-  process.env.LOCALFORGE_LOG_SQL === "true";
-
-export const db = drizzle(sqlite, { schema, logger: shouldLogSql });
-
-migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
-
-// Opt-in connection logging for DB diagnostics. In dev/build, this module can
-// be imported by many workers, so logging by default is noisy.
-if (
-  process.env.LOCALFORGE_LOG_DB_CONNECT === "1" ||
-  process.env.LOCALFORGE_LOG_DB_CONNECT === "true"
-) {
-  // eslint-disable-next-line no-console
-  console.log(`[localforge] SQLite connected: ${DB_PATH}`);
+    if (
+      process.env.LOCALFORGE_LOG_DB_CONNECT === "1" ||
+      process.env.LOCALFORGE_LOG_DB_CONNECT === "true"
+    ) {
+      // eslint-disable-next-line no-console
+      console.log(`[localforge] SQLite connected: ${DB_PATH}`);
+    }
+  }
+  return _sqlite;
 }
+
+function getDb() {
+  if (!_db) {
+    const shouldLogSql =
+      process.env.LOCALFORGE_LOG_SQL === "1" ||
+      process.env.LOCALFORGE_LOG_SQL === "true";
+
+    _db = drizzle(getSqlite(), { schema, logger: shouldLogSql });
+    migrate(_db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  }
+  return _db;
+}
+
+// Proxy object so existing callers can use `db.query...` etc. without changes.
+export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+  get(_target, prop) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (getDb() as any)[prop];
+  },
+});
+
+export const sqlite = new Proxy({} as Database.Database, {
+  get(_target, prop) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (getSqlite() as any)[prop];
+  },
+});
 
 export async function checkDatabaseConnection(): Promise<boolean> {
   try {
-    sqlite.prepare("SELECT 1").get();
+    getSqlite().prepare("SELECT 1").get();
     return true;
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -57,5 +82,3 @@ export async function checkDatabaseConnection(): Promise<boolean> {
     return false;
   }
 }
-
-export { sqlite };

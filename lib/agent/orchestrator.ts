@@ -53,6 +53,7 @@ import {
   getProjectEffectiveSettings,
   MAX_CONCURRENT_AGENTS_HARD_CAP,
 } from "../settings";
+import { resolveCloudModelConfig } from "../cloud-settings";
 
 /**
  * Coding-agent orchestrator.
@@ -133,6 +134,18 @@ type RunningSession = {
   promptFile: string;
   /** Watchdog timer — kills the runner if it hangs past the session deadline. */
   watchdog?: ReturnType<typeof setTimeout>;
+  /**
+   * The failure reason from the runner's "done" event, if the session failed.
+   * Used to detect permanent errors (e.g. 429 quota exceeded) so we can stop
+   * the auto-continue loop instead of retrying forever.
+   */
+  lastFailureReason?: string;
+  /**
+   * When true, `maybeContinueWithNextFeature` will NOT auto-start the next
+   * backlog feature after this session completes. Set for manually-assigned
+   * features (e.g. dragged to In Progress from the kanban).
+   */
+  noAutoContinue?: boolean;
 };
 
 /**
@@ -268,7 +281,8 @@ export type AgentSlot = {
 
 /**
  * Start the orchestrator for a project. Picks the highest-priority ready
- * feature, creates the agent_session row, spawns the runner child process,
+ * feature (or a specific feature when `options.featureId` is supplied),
+ * creates the agent_session row, spawns the runner child process,
  * and returns the session + feature.
  *
  * Supports up to MAX_CONCURRENT_AGENTS_CAP concurrent coding sessions per
@@ -279,11 +293,26 @@ export type AgentSlot = {
  *   - max concurrent agents reached
  *   - there is no ready feature to work on
  */
-export function startOrchestrator(projectId: number): StartResult {
+export function startOrchestrator(
+  projectId: number,
+  options?: {
+    /**
+     * When provided, start this specific feature instead of picking the
+     * highest-priority backlog item. Used when the user manually drags a
+     * card to "In Progress" so only that card runs (noAutoContinue is
+     * automatically set to true).
+     */
+    featureId?: number;
+    /** Suppress auto-continuation after this session completes. */
+    noAutoContinue?: boolean;
+  },
+): StartResult {
   const project = getProject(projectId);
   if (!project) {
     throw new OrchestratorError("Project not found", 404);
   }
+
+  const targetFeatureId = options?.featureId;
 
   // Reconcile ALL orphaned DB session rows whose child processes have died.
   // This keeps the DB from getting wedged if the dev server crashed mid-run.
@@ -299,13 +328,16 @@ export function startOrchestrator(projectId: number): StartResult {
   // This happens when the dev server restarts mid-run: the session gets reaped
   // above but the feature stays wedged. Reset them to backlog so they can be
   // picked up again.
+  // Exception: when a specific featureId is provided by the caller (manual
+  // drag-to-in-progress), skip recovery for that feature so we don't
+  // immediately flip it back to backlog.
   const runningFeatureIds = new Set(
     [...getState().running.values()]
       .filter((rs) => rs.session.projectId === projectId)
       .map((rs) => rs.feature.id),
   );
   const orphanedFeatures = getInProgressFeaturesForProject(projectId).filter(
-    (f) => !runningFeatureIds.has(f.id),
+    (f) => !runningFeatureIds.has(f.id) && f.id !== targetFeatureId,
   );
   for (const orphan of orphanedFeatures) {
     debugLog("RECOVER_ORPHANED_FEATURE", {
@@ -326,7 +358,24 @@ export function startOrchestrator(projectId: number): StartResult {
     );
   }
 
-  const feature = findNextReadyFeatureForProject(projectId);
+  // Resolve the feature to work on: specific ID supplied by caller, or
+  // pick the highest-priority ready item from the backlog.
+  let feature: FeatureRecord | null | undefined;
+  if (targetFeatureId != null) {
+    feature = getFeature(targetFeatureId);
+    if (!feature || feature.projectId !== projectId) {
+      throw new OrchestratorError("Feature not found in this project", 404);
+    }
+    // Ensure it's already running (another concurrent drag started it)
+    if (runningFeatureIds.has(feature.id)) {
+      throw new OrchestratorError(
+        "Feature is already being processed by an agent",
+        409,
+      );
+    }
+  } else {
+    feature = findNextReadyFeatureForProject(projectId);
+  }
   if (!feature) {
     throw new OrchestratorError(
       "No ready features to work on (backlog empty or all blocked)",
@@ -380,6 +429,9 @@ export function startOrchestrator(projectId: number): StartResult {
     projectDir: project.folderPath,
   });
 
+  const noAutoContinue =
+    options?.noAutoContinue ?? (targetFeatureId != null ? true : false);
+
   const rs: RunningSession = {
     session,
     feature: movedFeature,
@@ -387,6 +439,7 @@ export function startOrchestrator(projectId: number): StartResult {
     stdoutBuffer: "",
     stderrBuffer: "",
     promptFile,
+    noAutoContinue,
   };
   getState().running.set(session.id, rs);
 
@@ -488,9 +541,18 @@ function spawnAgentRunner(args: {
   projectDir: string;
 }): { child: ChildProcessWithoutNullStreams; promptFile: string } {
   const runnerPath = path.join(process.cwd(), "scripts", "agent-runner.mjs");
-  const { baseUrl, model, provider } = getEffectiveProviderConfig(
-    args.session.projectId,
-  );
+  const effectiveConfig = getEffectiveProviderConfig(args.session.projectId);
+  let { baseUrl, model, provider } = effectiveConfig;
+
+  // Detect cloud model composite value e.g. "cloud::openai::gpt-4o"
+  let cloudApiKey = "";
+  const cloudMatch = resolveCloudModelConfig(model);
+  if (cloudMatch) {
+    baseUrl = cloudMatch.baseUrl;
+    model = cloudMatch.model;
+    provider = `cloud_${cloudMatch.providerId}` as typeof provider;
+    cloudApiKey = cloudMatch.apiKey;
+  }
   const effectiveSettings = getProjectEffectiveSettings(args.session.projectId);
   const coderPrompt = effectiveSettings.coder_prompt || "";
   const devServerPort = effectiveSettings.dev_server_port || "3000";
@@ -541,6 +603,7 @@ function spawnAgentRunner(args: {
     provider,
     "--model",
     model,
+    ...(cloudApiKey ? ["--api-key", cloudApiKey] : []),
   ];
 
   debugLog("═══════════════════════ NEW SESSION ═══════════════════════");
@@ -748,12 +811,16 @@ function handleRunnerLine(rs: RunningSession, raw: string): void {
 
   if (parsed.type === "done") {
     const outcome = parsed.outcome;
+    const reason = (parsed as RunnerDoneLine).reason;
     debugLog("RUNNER_DONE_EVENT", {
       sessionId: rs.session.id,
       featureId: rs.feature.id,
       outcome,
-      reason: (parsed as RunnerDoneLine).reason,
+      reason,
     });
+    if (outcome !== "success" && reason) {
+      rs.lastFailureReason = reason;
+    }
     finalizeSession(rs, outcome === "success" ? "success" : "failed");
   }
 }
@@ -924,8 +991,31 @@ function finalizeSession(
       maybeContinueWithNextFeature(rs);
     }
   } else if (outcome === "failed") {
-    debugLog("AUTO_CONTINUE_AFTER_FAILURE", { sessionId: rs.session.id });
-    maybeContinueWithNextFeature(rs);
+    if (isFatalError(rs.lastFailureReason)) {
+      debugLog("NO_AUTO_CONTINUE_FATAL_ERROR", {
+        sessionId: rs.session.id,
+        reason: rs.lastFailureReason,
+      });
+      const log = appendAgentLog({
+        sessionId: rs.session.id,
+        featureId: rs.feature.id,
+        message: `Orchestrator stopped: permanent error detected — ${rs.lastFailureReason}. Please check your API key / billing and click Start again.`,
+        messageType: "error",
+      });
+      broadcast({
+        type: "log",
+        sessionId: rs.session.id,
+        featureId: rs.feature.id,
+        message: log.message,
+        messageType: "error",
+        screenshotPath: log.screenshotPath,
+        createdAt: log.createdAt,
+        logId: log.id,
+      });
+    } else {
+      debugLog("AUTO_CONTINUE_AFTER_FAILURE", { sessionId: rs.session.id });
+      maybeContinueWithNextFeature(rs);
+    }
   } else {
     debugLog("NO_AUTO_CONTINUE_TERMINATED", { sessionId: rs.session.id });
   }
@@ -942,8 +1032,39 @@ function finalizeSession(
  * Errors are swallowed + logged — any failure leaves the kanban in its
  * current state and the user can click Start again manually.
  */
+
+/**
+ * Returns true when the error message indicates a permanent, non-retryable
+ * failure (e.g. quota exceeded, auth errors). Used to break the auto-continue
+ * loop so the orchestrator doesn't spin forever on the same fatal error.
+ */
+function isFatalError(reason?: string): boolean {
+  if (!reason) return false;
+  const lower = reason.toLowerCase();
+  return (
+    lower.includes("429") ||
+    lower.includes("exceeded your current quota") ||
+    lower.includes("quota_exceeded") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("401") ||
+    lower.includes("403") ||
+    lower.includes("invalid api key") ||
+    lower.includes("incorrect api key") ||
+    lower.includes("permission denied") ||
+    lower.includes("access denied")
+  );
+}
+
 function maybeContinueWithNextFeature(rs: RunningSession): void {
   const projectId = rs.session.projectId;
+
+  // Manually-assigned sessions (drag-to-in-progress) opt out of auto-
+  // continuation so only the explicitly chosen task runs.
+  if (rs.noAutoContinue) {
+    debugLog("MAYBE_CONTINUE_SKIPPED_NO_AUTO", { projectId, sessionId: rs.session.id });
+    return;
+  }
+
   debugLog("MAYBE_CONTINUE_SCHEDULED", { projectId, previousSessionId: rs.session.id });
 
   setImmediate(() => {

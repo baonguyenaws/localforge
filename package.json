@@ -20,6 +20,7 @@
     "@dnd-kit/sortable": "^8.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@mariozechner/pi-coding-agent": "^0.70.2",
+    "@next/swc-darwin-arm64": "^16.2.6",
     "better-sqlite3": "^11.5.0",
     "canvas-confetti": "^1.9.3",
     "class-variance-authority": "^0.7.0",

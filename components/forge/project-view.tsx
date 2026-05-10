@@ -13,6 +13,7 @@ import { SettingsIcon, PlayIcon } from "@/components/forge/icons";
 import { ExternalLink, Square } from "lucide-react";
 import { ProjectSettingsDialog } from "@/components/app-shell/project-settings-dialog";
 import { pickAgentName } from "@/components/forge/agent-names";
+import { FileTree } from "@/components/forge/file-tree";
 
 type ProjectViewProps = {
   project: {
@@ -521,18 +522,27 @@ export function ProjectView({ project }: ProjectViewProps) {
         </div>
       </div>
 
-      {/* Agent Pods */}
-      <AgentPods
-        projectId={projectId}
-        slots={agentSlots}
-        maxConcurrentAgents={maxConcurrentAgents}
-        onStartAgent={handleStartAgent}
-        onStopAgent={handleStopAgent}
-        onExpandAgent={handleExpandAgent}
-      />
+      {/* Main content: File tree sidebar + Agent Pods & Kanban */}
+      <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {/* Left: File tree */}
+        <FileTree projectId={projectId} />
 
-      {/* Kanban Board */}
-      <ForgeKanban projectId={projectId} projectName={project.name} />
+        {/* Right: Agent Pods + Kanban */}
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          {/* Agent Pods */}
+          <AgentPods
+            projectId={projectId}
+            slots={agentSlots}
+            maxConcurrentAgents={maxConcurrentAgents}
+            onStartAgent={handleStartAgent}
+            onStopAgent={handleStopAgent}
+            onExpandAgent={handleExpandAgent}
+          />
+
+          {/* Kanban Board */}
+          <ForgeKanban projectId={projectId} projectName={project.name} />
+        </div>
+      </div>
 
       {/* Agent Log Expand Modal — derive the live slot from agentSlots every
           render so running state, mood, and logs stay in sync with polling

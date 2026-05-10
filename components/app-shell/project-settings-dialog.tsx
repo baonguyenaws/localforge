@@ -12,6 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  loadCloudSettings,
+  getEnabledCloudModels,
+  type EnabledCloudModel,
+} from "@/lib/cloud-providers";
 
 /**
  * Project-specific settings dialog (Feature #35).
@@ -126,6 +131,28 @@ export function ProjectSettingsDialog({
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [probe, setProbe] = React.useState<ModelsProbe>({ status: "idle" });
+  const [cloudModels, setCloudModels] = React.useState<EnabledCloudModel[]>([]);
+
+  // Load cloud models from server when dialog opens
+  React.useEffect(() => {
+    if (!open) return;
+    fetch("/api/settings/cloud", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { providers?: Record<string, { enabled: boolean; hasApiKey: boolean; hasOauthToken?: boolean; model?: string }> }) => {
+        if (!data.providers) return;
+        // Build a CloudConfig-like shape from the masked server response
+        const cfg: Record<string, { enabled: boolean; apiKey: string; _hasApiKey: boolean; _hasOauthToken: boolean; model: string; baseUrl: string }> = {};
+        for (const [id, p] of Object.entries(data.providers)) {
+          cfg[id] = { enabled: p.enabled, apiKey: "", _hasApiKey: p.hasApiKey, _hasOauthToken: p.hasOauthToken ?? false, model: p.model ?? "", baseUrl: "" };
+        }
+        setCloudModels(getEnabledCloudModels(cfg as Parameters<typeof getEnabledCloudModels>[0]));
+      })
+      .catch(() => {
+        // Fallback: try localStorage
+        const localCfg = loadCloudSettings();
+        setCloudModels(getEnabledCloudModels(localCfg));
+      });
+  }, [open]);
 
   // Fetch current overrides + defaults whenever the dialog opens.
   React.useEffect(() => {
@@ -325,64 +352,18 @@ export function ProjectSettingsDialog({
           )}
           {!loading && data && (
             <>
-              <div className="flex flex-col gap-1">
-                <label
-                  htmlFor="project-provider"
-                  className="text-sm font-medium text-foreground"
-                >
-                  Provider
-                </label>
-                <select
-                  id="project-provider"
-                  name="project-provider"
-                  data-testid="project-settings-provider-select"
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
-                  disabled={submitting}
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <option value="">
-                    Use global default ({PROVIDER_LABELS[
-                      isProvider(data.defaults.provider)
-                        ? data.defaults.provider
-                        : "lm_studio"
-                    ]})
-                  </option>
-                  <option value="lm_studio">LM Studio</option>
-                  <option value="ollama">Ollama</option>
-                </select>
-                <p className="text-xs text-muted-foreground">
-                  {data.overrides.provider
-                    ? "Project override is set. Choose 'Use global default' to clear."
-                    : "Using the global default. Pick a provider to override."}
-                </p>
-              </div>
-              <Field
-                label={`${PROVIDER_LABELS[activeProvider]} URL`}
-                id={`project-${urlKey}`}
-                value={urlValue}
-                onChange={setUrlValue}
-                placeholder={urlDefault}
-                disabled={submitting}
-                description={
-                  urlOverridden
-                    ? "Project override is set. Clear to fall back to the global default."
-                    : "Using the global default. Type a value to override."
-                }
-              />
-              <ProviderProbeStatus
-                provider={activeProvider}
-                probe={probe}
-              />
-              <ModelField
-                probe={probe}
-                provider={activeProvider}
+              {/* ── Unified AI model picker ── */}
+              <UnifiedModelPicker
+                localProbe={probe}
+                localProvider={activeProvider}
+                cloudModels={cloudModels}
                 model={model}
                 onChange={setModel}
-                placeholder={data.defaults.model}
-                disabled={submitting}
+                defaultModel={data.defaults.model}
                 overridden={!!data.overrides.model}
+                disabled={submitting}
               />
+
               <div className="flex flex-col gap-1">
                 <label
                   htmlFor="project-coder-prompt"
@@ -522,30 +503,6 @@ export function ProjectSettingsDialog({
                   Currently effective
                 </p>
                 <p className="mt-1">
-                  Provider:{" "}
-                  <span>
-                    {PROVIDER_LABELS[
-                      isProvider(data.effective.provider)
-                        ? data.effective.provider
-                        : "lm_studio"
-                    ]}
-                  </span>
-                </p>
-                <p>
-                  URL:{" "}
-                  <span>
-                    {
-                      data.effective[
-                        urlKeyFor(
-                          isProvider(data.effective.provider)
-                            ? data.effective.provider
-                            : "lm_studio",
-                        )
-                      ]
-                    }
-                  </span>
-                </p>
-                <p>
                   Model: <span>{data.effective.model}</span>
                 </p>
                 <p>
@@ -658,6 +615,120 @@ function ProviderProbeStatus({
     );
   }
   return null;
+}
+
+/**
+ * Unified model picker — shows Local models (from the active provider probe)
+ * and Cloud models (from localStorage) in a grouped select.
+ */
+function UnifiedModelPicker({
+  localProbe,
+  localProvider,
+  cloudModels,
+  model,
+  onChange,
+  defaultModel,
+  overridden,
+  disabled,
+}: {
+  localProbe: ModelsProbe;
+  localProvider: ProviderId;
+  cloudModels: EnabledCloudModel[];
+  model: string;
+  onChange: (v: string) => void;
+  defaultModel: string;
+  overridden: boolean;
+  disabled?: boolean;
+}) {
+  const localModels =
+    localProbe.status === "ok" ? localProbe.models : [];
+
+  // Group cloud models by provider
+  const cloudByProvider = cloudModels.reduce<
+    Record<string, EnabledCloudModel[]>
+  >((acc, m) => {
+    if (!acc[m.providerId]) acc[m.providerId] = [];
+    acc[m.providerId].push(m);
+    return acc;
+  }, {});
+
+  const allValues = [
+    ...localModels,
+    ...cloudModels.map((m) => m.value),
+  ];
+  const isKnown = model === "" || allValues.includes(model);
+  const selectValue = isKnown ? model : "";
+
+  const hasAnything = localModels.length > 0 || cloudModels.length > 0;
+
+  if (!hasAnything) {
+    return (
+      <Field
+        label="AI Model"
+        id="project-model"
+        value={model}
+        onChange={onChange}
+        placeholder={defaultModel}
+        disabled={disabled}
+        description={
+          overridden
+            ? "Project override set. Clear to fall back to global default."
+            : localProbe.status === "error"
+              ? "Local provider unreachable. Configure a cloud provider in Global Settings → Cloud, or fix the URL."
+              : "Using global default. Type a model id to override."
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor="project-model" className="text-sm font-medium text-foreground">
+        AI Model
+      </label>
+      <select
+        id="project-model"
+        name="project-model"
+        data-testid="project-settings-model-select"
+        value={selectValue}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <option value="">
+          {overridden
+            ? "Use global default"
+            : `Use global default (${defaultModel})`}
+        </option>
+
+        {localModels.length > 0 && (
+          <optgroup label={`Local — ${PROVIDER_LABELS[localProvider]}`}>
+            {localModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </optgroup>
+        )}
+
+        {Object.entries(cloudByProvider).map(([pid, models]) => (
+          <optgroup key={pid} label={`☁ ${models[0].providerName}`}>
+            {models.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.model}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+
+      <p className="text-xs text-muted-foreground">
+        {overridden
+          ? "Project override set. Choose 'Use global default' to clear."
+          : `Choose from local models${cloudModels.length > 0 ? " or enabled cloud providers" : ""}. Enable cloud providers in Global Settings → Cloud.`}
+      </p>
+    </div>
+  );
 }
 
 function ModelField({

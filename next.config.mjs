@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: "standalone",
   // In Next.js 16 this key moved out of `experimental`.
   serverExternalPackages: [
     "better-sqlite3",

@@ -1,8 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
 import { HardwarePanel } from "@/components/settings/hardware-panel";
 import type { GlobalSettingsShape } from "@/lib/settings";
 
@@ -63,14 +62,38 @@ type ScanState =
   | { status: "loading" }
   | { status: "done"; hits: ScanHit[] };
 
-export function SettingsForm({ initial }: { initial: FormState }) {
+export type SettingsFormHandle = {
+  save: () => Promise<{ ok: boolean; error?: string }>;
+};
+
+export const SettingsForm = forwardRef<
+  SettingsFormHandle,
+  { initial: FormState; section?: "local" | "general" }
+>(function SettingsForm({ initial, section = "local" }, ref) {
   const [values, setValues] = useState<FormState>(initial);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [pending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
   const [probe, setProbe] = useState<ModelsProbe>({ status: "idle" });
   const [scan, setScan] = useState<ScanState>({ status: "idle" });
   const router = useRouter();
+
+  useImperativeHandle(ref, () => ({
+    async save() {
+      try {
+        const res = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(values),
+        });
+        const data = (await res.json()) as { settings?: FormState; error?: string };
+        if (!res.ok) return { ok: false, error: data.error ?? `Save failed (HTTP ${res.status})` };
+        if (data.settings) setValues(data.settings);
+        startTransition(() => router.refresh());
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Unexpected error" };
+      }
+    },
+  }));
 
   const activeProvider = values.provider;
   const activeUrlKey = urlKeyFor(activeProvider);
@@ -182,227 +205,183 @@ export function SettingsForm({ initial }: { initial: FormState }) {
     };
   }, [activeProvider, activeUrl, runProbe]);
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    setSaved(false);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      const data = (await res.json()) as {
-        settings?: FormState;
-        error?: string;
-      };
-      if (!res.ok) {
-        setError(data.error ?? `Save failed (HTTP ${res.status})`);
-        return;
-      }
-      if (data.settings) setValues(data.settings);
-      setSaved(true);
-      startTransition(() => router.refresh());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unexpected error");
-    }
-  }
-
   return (
-    <form
-      onSubmit={onSubmit}
+    <div
       data-testid="settings-form"
-      className="flex flex-col gap-6 rounded-lg border border-border bg-card p-6 shadow-sm"
+      className="flex flex-col gap-4"
     >
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="provider"
-          className="text-sm font-medium text-foreground"
-        >
-          Local model provider
-        </label>
-        <select
-          id="provider"
-          name="provider"
-          data-testid="settings-provider-select"
-          value={activeProvider}
-          onChange={(e) => update("provider", e.target.value as FormState["provider"])}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {PROVIDER_DESCRIPTORS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-        <p className="text-xs text-muted-foreground">
-          Pick the local server LocalForge should talk to for chat and model
-          listings.
-        </p>
-      </div>
+      {/* Card */}
+      <div className="rounded-lg border border-border bg-card p-6 shadow-sm flex flex-col gap-6">
+        {section === "local" && (
+          <>
+              <div className="flex flex-col gap-2">
+                <label
+                  htmlFor="provider"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Local model provider
+                </label>
+                <select
+                  id="provider"
+                  name="provider"
+                  data-testid="settings-provider-select"
+                  value={activeProvider}
+                  onChange={(e) => update("provider", e.target.value as FormState["provider"])}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {PROVIDER_DESCRIPTORS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Pick the local server LocalForge should talk to for chat and model
+                  listings.
+                </p>
+              </div>
 
-      <Field
-        label={`${activeDescriptor.label} URL`}
-        id={activeUrlKey}
-        description={
-          activeProvider === "lm_studio"
-            ? "Base URL of your LM Studio HTTP server. Defaults to http://127.0.0.1:1234."
-            : "Base URL of your Ollama HTTP server. Defaults to http://127.0.0.1:11434."
-        }
-        value={activeUrl}
-        onChange={(v) => update(activeUrlKey, v)}
-        placeholder={
-          activeProvider === "lm_studio"
-            ? "http://127.0.0.1:1234"
-            : "http://127.0.0.1:11434"
-        }
-      />
+              <Field
+                label={`${activeDescriptor.label} URL`}
+                id={activeUrlKey}
+                description={
+                  activeProvider === "lm_studio"
+                    ? "Base URL of your LM Studio HTTP server. Defaults to http://127.0.0.1:1234."
+                    : "Base URL of your Ollama HTTP server. Defaults to http://127.0.0.1:11434."
+                }
+                value={activeUrl}
+                onChange={(v) => update(activeUrlKey, v)}
+                placeholder={
+                  activeProvider === "lm_studio"
+                    ? "http://127.0.0.1:1234"
+                    : "http://127.0.0.1:11434"
+                }
+              />
 
-      <ProviderStatus
-        descriptor={activeDescriptor}
-        probe={probe}
-        scan={scan}
-        onSwitchProvider={(providerId, url) => {
-          const urlKey = urlKeyFor(providerId);
-          // Update both the provider AND the matching url field together
-          // so the probe re-fires against the right URL on the next render.
-          setSaved(false);
-          setValues((prev) => ({
-            ...prev,
-            provider: providerId,
-            [urlKey]: url,
-          }));
-        }}
-      />
+              <ProviderStatus
+                descriptor={activeDescriptor}
+                probe={probe}
+                scan={scan}
+                onSwitchProvider={(providerId, url) => {
+                  const urlKey = urlKeyFor(providerId);
+                  setSaved(false);
+                  setValues((prev) => ({
+                    ...prev,
+                    provider: providerId,
+                    [urlKey]: url,
+                  }));
+                }}
+              />
 
-      <ModelField
-        probe={probe}
-        provider={activeProvider}
-        model={values.model}
-        onChange={(v) => update("model", v)}
-      />
+              <ModelField
+                probe={probe}
+                provider={activeProvider}
+                model={values.model}
+                onChange={(v) => update("model", v)}
+              />
 
-      <HardwarePanel
-        model={values.model}
-        installedModels={probe.status === "ok" ? probe.models : undefined}
-        onModelChange={(v) => update("model", v)}
-      />
+              <HardwarePanel
+                model={values.model}
+                installedModels={probe.status === "ok" ? probe.models : undefined}
+                onModelChange={(v) => update("model", v)}
+              />
+            </>
+          )}
 
-      <Field
-        label="Working directory"
-        id="working_directory"
-        description="Absolute path where new project folders will be created on disk."
-        value={values.working_directory}
-        onChange={(v) => update("working_directory", v)}
-        placeholder="/path/to/projects"
-      />
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="max_concurrent_agents"
-          className="text-sm font-medium text-foreground"
-        >
-          Max concurrent agents
-        </label>
-        <select
-          id="max_concurrent_agents"
-          name="max_concurrent_agents"
-          data-testid="settings-max-concurrent-agents-select"
-          value={values.max_concurrent_agents}
-          onChange={(e) => update("max_concurrent_agents", e.target.value)}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          Default number of coding agents allowed to run in parallel per
-          project. Most local setups only have the VRAM for one. Individual
-          projects can override this in their own settings.
-        </p>
+          {section === "general" && (
+            <>
+              <Field
+                label="Working directory"
+                id="working_directory"
+                description="Absolute path where new project folders will be created on disk."
+                value={values.working_directory}
+                onChange={(v) => update("working_directory", v)}
+                placeholder="/path/to/projects"
+              />
+              <div className="flex flex-col gap-2">
+                <label
+                  htmlFor="max_concurrent_agents"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Max concurrent agents
+                </label>
+                <select
+                  id="max_concurrent_agents"
+                  name="max_concurrent_agents"
+                  data-testid="settings-max-concurrent-agents-select"
+                  value={values.max_concurrent_agents}
+                  onChange={(e) => update("max_concurrent_agents", e.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Default number of coding agents allowed to run in parallel per
+                  project. Most local setups only have the VRAM for one. Individual
+                  projects can override this in their own settings.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <label
+                  htmlFor="playwright_enabled"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Playwright verification
+                </label>
+                <select
+                  id="playwright_enabled"
+                  name="playwright_enabled"
+                  data-testid="settings-playwright-enabled-select"
+                  value={values.playwright_enabled}
+                  onChange={(e) => update("playwright_enabled", e.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="false">Disabled (default)</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  When enabled, every completed feature is verified by launching
+                  Chromium against http://localhost:&lt;dev port&gt; and a screenshot
+                  is captured. Many small local models can&apos;t drive a browser
+                  reliably, so this is off by default — the coding agent&apos;s own
+                  success signal becomes the outcome. Individual projects can
+                  override this in their own settings.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <label
+                  htmlFor="playwright_headed"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Playwright headed browser
+                </label>
+                <select
+                  id="playwright_headed"
+                  name="playwright_headed"
+                  data-testid="settings-playwright-headed-select"
+                  value={values.playwright_headed}
+                  onChange={(e) => update("playwright_headed", e.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="false">Headless (default)</option>
+                  <option value="true">Headed (visible window)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  When Playwright verification is enabled, runs post-run Chromium in a
+                  visible window (with a short slowMo) and tells the coding agent to use{" "}
+                  <code className="font-mono">playwright-cli open --headed</code>. On
+                  CI (<code className="font-mono">CI</code> env set), verification stays
+                  headless. Individual projects can override in project settings.
+                </p>
+              </div>
+            </>
+          )}
       </div>
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="playwright_enabled"
-          className="text-sm font-medium text-foreground"
-        >
-          Playwright verification
-        </label>
-        <select
-          id="playwright_enabled"
-          name="playwright_enabled"
-          data-testid="settings-playwright-enabled-select"
-          value={values.playwright_enabled}
-          onChange={(e) => update("playwright_enabled", e.target.value)}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="false">Disabled (default)</option>
-          <option value="true">Enabled</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          When enabled, every completed feature is verified by launching
-          Chromium against http://localhost:&lt;dev port&gt; and a screenshot
-          is captured. Many small local models can&apos;t drive a browser
-          reliably, so this is off by default — the coding agent&apos;s own
-          success signal becomes the outcome. Individual projects can
-          override this in their own settings.
-        </p>
-      </div>
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="playwright_headed"
-          className="text-sm font-medium text-foreground"
-        >
-          Playwright headed browser
-        </label>
-        <select
-          id="playwright_headed"
-          name="playwright_headed"
-          data-testid="settings-playwright-headed-select"
-          value={values.playwright_headed}
-          onChange={(e) => update("playwright_headed", e.target.value)}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="false">Headless (default)</option>
-          <option value="true">Headed (visible window)</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          When Playwright verification is enabled, runs post-run Chromium in a
-          visible window (with a short slowMo) and tells the coding agent to use{" "}
-          <code className="font-mono">playwright-cli open --headed</code>. On
-          CI (<code className="font-mono">CI</code> env set), verification stays
-          headless. Individual projects can override in project settings.
-        </p>
-      </div>
-      <div className="flex items-center gap-3">
-        <Button
-          type="submit"
-          disabled={pending}
-          data-testid="settings-save-button"
-        >
-          {pending ? "Saving…" : "Save settings"}
-        </Button>
-        {saved && (
-          <span
-            data-testid="settings-saved-indicator"
-            className="text-sm text-green-500"
-          >
-            Saved.
-          </span>
-        )}
-        {error && (
-          <span
-            role="alert"
-            data-testid="settings-error"
-            className="text-sm text-destructive"
-          >
-            {error}
-          </span>
-        )}
-      </div>
-    </form>
+    </div>
   );
-}
+});
 
 function guidanceForKind(
   kind: ProbeFailureKind,

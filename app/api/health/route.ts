@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { checkDatabaseConnection } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 // GET /api/health - basic liveness + DB connection check.
 // Used by Feature 0 (Database connection established).
 export async function GET() {

@@ -22,6 +22,8 @@ type DialogProps = {
   "aria-label"?: string;
   /** Id of the element labelling this dialog. */
   labelledBy?: string;
+  /** Extra classes applied to the dialog panel (e.g. to override max-width). */
+  className?: string;
 };
 
 export function Dialog({
@@ -29,6 +31,7 @@ export function Dialog({
   onOpenChange,
   children,
   labelledBy,
+  className,
   "aria-label": ariaLabel,
 }: DialogProps) {
   // Lock body scroll while the dialog is open.
@@ -78,6 +81,7 @@ export function Dialog({
         // any dialog is open (see body-overflow effect above).
         className={cn(
           "relative z-10 flex w-full max-w-md max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-xl",
+          className,
         )}
       >
         {children}

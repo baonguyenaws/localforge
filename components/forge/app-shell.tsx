@@ -71,10 +71,26 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   }, [activeProject]);
 
   // SSE subscription for activity events
+  const eventCounterRef = React.useRef(0);
+  const recentFingerprintsRef = React.useRef<Map<string, number>>(new Map());
   React.useEffect(() => {
     let es: EventSource | null = null;
     let closed = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    // Deduplicate events that arrive within 500ms with the same fingerprint
+    // (can happen in React StrictMode double-invoke or dev hot-reload).
+    function isDuplicate(fingerprint: string): boolean {
+      const now = Date.now();
+      const seen = recentFingerprintsRef.current;
+      // Cleanup old entries
+      for (const [k, t] of seen) {
+        if (now - t > 500) seen.delete(k);
+      }
+      if (seen.has(fingerprint)) return true;
+      seen.set(fingerprint, now);
+      return false;
+    }
 
     function connect() {
       if (closed) return;
@@ -88,8 +104,10 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
             messageType: string;
             createdAt: string;
           };
+          const fingerprint = `log-${data.sessionId}-${data.createdAt}-${data.message.slice(0, 40)}`;
+          if (isDuplicate(fingerprint)) return;
           const ev: ActivityEvent = {
-            id: `log-${data.sessionId}-${Date.now()}-${Math.random()}`,
+            id: `log-${data.sessionId}-${++eventCounterRef.current}`,
             kind: data.messageType === "error" ? "err" : "run",
             who: `Agent #${data.sessionId}`,
             text: data.message.slice(0, 120),
@@ -109,12 +127,14 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
             featureName?: string;
             featureStatus?: string;
           };
+          const fingerprint = `status-${data.sessionId}-${data.sessionStatus}-${data.featureName ?? ""}-${data.featureStatus ?? ""}`;
+          if (isDuplicate(fingerprint)) return;
           const isGood =
             data.sessionStatus === "completed" ||
             data.featureStatus === "completed";
           const isWarn = data.sessionStatus === "failed";
           const ev: ActivityEvent = {
-            id: `status-${data.sessionId}-${Date.now()}`,
+            id: `status-${data.sessionId}-${++eventCounterRef.current}`,
             kind: isGood ? "good" : isWarn ? "warn" : "run",
             who: `Agent #${data.sessionId}`,
             text: data.featureName

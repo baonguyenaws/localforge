@@ -164,6 +164,7 @@ export function AddFeatureDialog({
         if (!o && !submitting) onOpenChange(false);
       }}
       labelledBy="add-feature-title"
+      className="max-w-3xl"
     >
       <DialogCloseButton onClick={() => onOpenChange(false)} />
       <form

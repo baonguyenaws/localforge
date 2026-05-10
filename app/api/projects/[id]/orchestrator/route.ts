@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getProject } from "@/lib/projects";
 import { getFeature, listFeaturesForProject } from "@/lib/features";
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  let body: { action?: string; sessionId?: number } = {};
+  let body: { action?: string; sessionId?: number; featureId?: number } = {};
   try {
     body = (await req.json().catch(() => ({}))) as typeof body;
   } catch {
@@ -162,7 +163,10 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
 
   // action === "start" (default)
   try {
-    const result = startOrchestrator(projectId);
+    const result = startOrchestrator(
+      projectId,
+      body.featureId != null ? { featureId: body.featureId } : undefined,
+    );
     return NextResponse.json(
       {
         session: result.session,

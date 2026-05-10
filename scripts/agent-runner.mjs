@@ -195,22 +195,62 @@ function createPiLocalModel({ provider, baseUrl, model }) {
   };
 }
 
+/**
+ * Build a Pi model descriptor for a cloud provider (OpenAI-compatible endpoint).
+ * provider is e.g. "cloud_openai", baseUrl is the API endpoint, model is the
+ * bare model name, apiKey is the real API key.
+ */
+function createPiCloudModel({ provider, baseUrl, model, apiKey }) {
+  // Pi provider name must be a simple slug — use "cloud" as the namespace
+  const piProvider = provider; // e.g. "cloud_openai"
+  return {
+    id: model,
+    name: model,
+    api: "openai-completions",
+    provider: piProvider,
+    baseUrl: ensureOpenAiBaseUrl(baseUrl),
+    reasoning: false,
+    input: ["text"],
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    contextWindow: 128000,
+    maxTokens: 16384,
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      supportsStrictMode: false,
+      maxTokensField: "max_tokens",
+    },
+    _apiKey: apiKey, // stored for runtime registration
+  };
+}
+
 function createPiModelRuntime(config) {
-  const localModel = createPiLocalModel(config);
+  const isCloud = config.apiKey && config.apiKey.length > 0;
+  const piModel = isCloud
+    ? createPiCloudModel(config)
+    : createPiLocalModel(config);
+
   const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey(localModel.provider, "localforge");
+  const effectiveApiKey = isCloud ? config.apiKey : "localforge";
+  authStorage.setRuntimeApiKey(piModel.provider, effectiveApiKey);
   const modelRegistry = ModelRegistry.inMemory(authStorage);
-  modelRegistry.registerProvider(localModel.provider, {
-    baseUrl: localModel.baseUrl,
-    apiKey: "localforge",
-    api: localModel.api,
-    models: [localModel],
+  modelRegistry.registerProvider(piModel.provider, {
+    baseUrl: piModel.baseUrl,
+    apiKey: effectiveApiKey,
+    api: piModel.api,
+    models: [piModel],
   });
   return {
     authStorage,
     modelRegistry,
-    model: modelRegistry.find(localModel.provider, localModel.id) ?? localModel,
-    baseUrl: localModel.baseUrl,
+    model: modelRegistry.find(piModel.provider, piModel.id) ?? piModel,
+    baseUrl: piModel.baseUrl,
   };
 }
 
@@ -659,7 +699,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, model, abort, coderPrompt, devServerPort }) {
+async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, model, apiKey, abort, coderPrompt, devServerPort }) {
   const maxTurns = Number.parseInt(
     process.env.LOCALFORGE_MAX_TURNS ?? "1000",
     10,
@@ -691,7 +731,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
   let maxTurnsExceeded = false;
 
   try {
-    const piRuntime = createPiModelRuntime({ provider, baseUrl, model });
+    const piRuntime = createPiModelRuntime({ provider, baseUrl, model, apiKey });
     const loader = new DefaultResourceLoader({
       cwd: projectDir,
       agentDir: getAgentDir(),
@@ -883,6 +923,7 @@ async function main() {
   const baseUrl = args["base-url"] ?? "";
   const provider = args["provider"] ?? "lm_studio";
   const model = args["model"] ?? "";
+  const apiKey = args["api-key"] ?? "";
 
   debugLog("MAIN_START", { sessionId, featureId, featureTitleArg, projectDir, baseUrl, provider, model, promptFile });
 
@@ -951,6 +992,7 @@ async function main() {
       baseUrl,
       provider,
       model,
+      apiKey,
       abort,
       coderPrompt,
       devServerPort,

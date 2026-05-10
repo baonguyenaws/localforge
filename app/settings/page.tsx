@@ -1,5 +1,5 @@
 import { getGlobalSettings } from "@/lib/settings";
-import { SettingsForm } from "./settings-form";
+import { SettingsTabs } from "./settings-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -15,12 +15,12 @@ export default function SettingsPage() {
           Global settings
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Configure the local model server and where LocalForge stores project
-          folders on disk. These values are saved to SQLite and apply to every
-          project unless a project override is set.
+          Configure AI providers and where LocalForge stores project folders on
+          disk. These values are saved and apply to every project unless a
+          project override is set.
         </p>
       </header>
-      <SettingsForm initial={current} />
+      <SettingsTabs initial={current} />
     </div>
   );
 }

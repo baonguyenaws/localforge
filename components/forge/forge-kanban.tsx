@@ -513,6 +513,19 @@ export function ForgeKanban({
         if (failed) {
           throw new Error(`Persist failed (${failed.status})`);
         }
+
+        // When a card is dropped into In Progress, start ONLY that specific
+        // feature. Passing featureId tells the orchestrator to run exactly
+        // this card and NOT auto-continue to other backlog tasks when done.
+        if (targetColumn === "in_progress") {
+          await fetch(`/api/projects/${projectId}/orchestrator`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "start", featureId: activeIdLocal }),
+          }).catch(() => {});
+          window.dispatchEvent(new CustomEvent("orchestrator:changed"));
+        }
+
         await load();
       } catch (err) {
         setDragError(
@@ -521,7 +534,7 @@ export function ForgeKanban({
         setState({ kind: "ready", features: revertSnapshot });
       }
     },
-    [load],
+    [load, projectId],
   );
 
   const handleDragCancel = React.useCallback(() => {

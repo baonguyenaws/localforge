@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getGlobalSettings } from "@/lib/settings";
 import { listModels, LMStudioUnavailableError } from "@/lib/agent/lm-studio";

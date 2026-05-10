@@ -1,0 +1,25 @@
+services:
+  localforge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: localforge
+    ports:
+      - "7777:7777"
+    volumes:
+      # Persist SQLite database
+      - localforge_data:/app/data
+      # Mount host projects directory so the agent can work on real files
+      - localforge_projects:/app/projects
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    # Optional: allow agent to connect to LM Studio / Ollama running on the host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  localforge_data:
+  localforge_projects:
