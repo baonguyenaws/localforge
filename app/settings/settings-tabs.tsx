@@ -71,6 +71,7 @@ export function SettingsTabs({ initial }: { initial: GlobalSettingsShape }) {
           ref={localFormRef}
           initial={initial}
           section={activeTab !== "cloud" ? activeTab : "general"}
+          onDirty={() => setSaved(false)}
         />
       </div>
       <div className={activeTab === "cloud" ? "" : "hidden"}>

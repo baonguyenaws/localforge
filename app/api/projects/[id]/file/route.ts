@@ -70,6 +70,46 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
 }
 
 /**
+ * POST /api/projects/:id/file?path=<relative-path>
+ * Creates a new empty file inside the project folder.
+ * Parent directories are created automatically if needed.
+ */
+export async function POST(req: NextRequest, ctx: RouteContext) {
+  const { id } = await ctx.params;
+  const numericId = Number.parseInt(id, 10);
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+
+  const project = getProject(numericId);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  const relPath = req.nextUrl.searchParams.get("path");
+  if (!relPath) {
+    return NextResponse.json({ error: "Missing path param" }, { status: 400 });
+  }
+
+  const absPath = resolveFilePath(project.folderPath, relPath);
+  if (!absPath) {
+    return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+  }
+
+  if (fs.existsSync(absPath)) {
+    return NextResponse.json({ error: "File already exists" }, { status: 409 });
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, "", "utf-8");
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json({ error: "Failed to create file" }, { status: 500 });
+  }
+}
+
+/**
  * PUT /api/projects/:id/file?path=<relative-path>
  * Overwrites a file inside the project folder with the provided content.
  * Body: { content: string }

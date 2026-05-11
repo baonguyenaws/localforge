@@ -525,7 +525,7 @@ export function ProjectView({ project }: ProjectViewProps) {
       {/* Main content: File tree sidebar + Agent Pods & Kanban */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
         {/* Left: File tree */}
-        <FileTree projectId={projectId} />
+        <FileTree projectId={projectId} projectPath={project.folderPath} />
 
         {/* Right: Agent Pods + Kanban */}
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}>

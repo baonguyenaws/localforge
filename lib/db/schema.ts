@@ -122,6 +122,22 @@ export const chatMessages = sqliteTable(
   }),
 );
 
+export const featureChatMessages = sqliteTable(
+  "feature_chat_messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    featureId: integer("feature_id")
+      .notNull()
+      .references(() => features.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // user | assistant
+    content: text("content").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(CURRENT_TIMESTAMP)`),
+  },
+  (t) => ({
+    featureIdIdx: index("feature_chat_messages_feature_id_idx").on(t.featureId),
+  }),
+);
+
 export const settings = sqliteTable(
   "settings",
   {

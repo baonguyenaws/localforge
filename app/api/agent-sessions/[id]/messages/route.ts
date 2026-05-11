@@ -10,6 +10,7 @@ import {
   type LMStudioChatMessage,
 } from "@/lib/agent/lm-studio";
 import { getEffectiveProviderConfig } from "@/lib/settings";
+import { resolveCloudModelConfig } from "@/lib/cloud-settings";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -124,7 +125,17 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     })),
   ];
 
-  const providerConfig = getEffectiveProviderConfig(session.projectId);
+  const rawConfig = getEffectiveProviderConfig(session.projectId);
+  let { baseUrl, model } = rawConfig;
+
+  // Detect cloud model composite value e.g. "cloud::openai::gpt-4o"
+  let cloudApiKey = "";
+  const cloudMatch = resolveCloudModelConfig(model);
+  if (cloudMatch) {
+    baseUrl = cloudMatch.baseUrl;
+    model = cloudMatch.model;
+    cloudApiKey = cloudMatch.apiKey;
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -141,10 +152,11 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
       let errored = false;
       try {
         for await (const evt of streamChatCompletion({
-          baseUrl: providerConfig.baseUrl,
-          model: providerConfig.model,
+          baseUrl,
+          model,
           messages: llmMessages,
           signal: req.signal,
+          apiKey: cloudApiKey || undefined,
         })) {
           if (evt.type === "delta") {
             full += evt.content;

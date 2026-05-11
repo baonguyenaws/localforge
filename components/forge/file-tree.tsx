@@ -3,6 +3,8 @@
 import React from "react";
 import type { FileNode } from "@/app/api/projects/[id]/filetree/route";
 import { FileEditorDialog } from "@/components/forge/file-editor-dialog";
+import { FilePlus, FolderPlus, RefreshCw, ChevronsUpDown, TerminalSquare } from "lucide-react";
+import { TerminalDialog } from "@/components/forge/terminal-dialog";
 
 // ─── File-type icon helpers ────────────────────────────────────────────────
 
@@ -35,14 +37,20 @@ function TreeNode({
   node,
   depth,
   defaultOpen,
+  collapseKey,
   onFileClick,
 }: {
   node: FileNode;
   depth: number;
   defaultOpen: boolean;
+  collapseKey: number;
   onFileClick: (path: string) => void;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
+
+  React.useEffect(() => {
+    if (collapseKey > 0) setOpen(false);
+  }, [collapseKey]);
 
   const indent = depth * 12;
 
@@ -78,6 +86,7 @@ function TreeNode({
                 node={child}
                 depth={depth + 1}
                 defaultOpen={false}
+                collapseKey={collapseKey}
                 onFileClick={onFileClick}
               />
             ))}
@@ -113,11 +122,23 @@ type State =
   | { status: "error"; message: string }
   | { status: "ok"; tree: FileNode[] };
 
-export function FileTree({ projectId }: { projectId: number }) {
+export function FileTree({
+  projectId,
+  projectPath = "",
+}: {
+  projectId: number;
+  projectPath?: string;
+}) {
   const [state, setState] = React.useState<State>({ status: "loading" });
   const [selectedFile, setSelectedFile] = React.useState<string | null>(null);
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [refreshKey, setRefreshKey] = React.useState(0);
+  const [collapseKey, setCollapseKey] = React.useState(0);
+  const [terminalOpen, setTerminalOpen] = React.useState(false);
+  const [createMode, setCreateMode] = React.useState<null | "file" | "folder">(null);
+  const [createName, setCreateName] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
+  const createInputRef = React.useRef<HTMLInputElement>(null);
 
   function handleFileClick(path: string) {
     setSelectedFile(path);
@@ -128,7 +149,33 @@ export function FileTree({ projectId }: { projectId: number }) {
     setRefreshKey((k) => k + 1);
   }
 
-  // Refresh the file tree whenever any task status changes (e.g. a task
+  async function handleCreate() {
+    const name = createName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    try {
+      const endpoint =
+        createMode === "file"
+          ? `/api/projects/${projectId}/file?path=${encodeURIComponent(name)}`
+          : `/api/projects/${projectId}/folder?path=${encodeURIComponent(name)}`;
+      const res = await fetch(endpoint, { method: "POST" });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) throw new Error(data.error ?? "Failed");
+      setCreateMode(null);
+      setCreateName("");
+      refreshTree();
+    } catch (err) {
+      console.error("Create failed:", err);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  React.useEffect(() => {
+    if (createMode && createInputRef.current) {
+      createInputRef.current.focus();
+    }
+  }, [createMode]);
   // completes and the agent has written new files to the project folder).
   React.useEffect(() => {
     const onRefresh = () => refreshTree();
@@ -182,28 +229,154 @@ export function FileTree({ projectId }: { projectId: number }) {
       {/* Header */}
       <div
         style={{
-          padding: "10px 12px 8px",
+          padding: "6px 8px 6px 12px",
           borderBottom: "1px solid var(--line)",
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 6,
+          justifyContent: "space-between",
         }}
       >
-        <span style={{ fontSize: 13 }}>📂</span>
-        <span
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>📂</span>
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 10,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--ink-3)",
+              fontWeight: 600,
+            }}
+          >
+            Files
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <button
+            type="button"
+            title="New file"
+            onClick={() => { setCreateMode("file"); setCreateName(""); }}
+            style={{ padding: 4, borderRadius: 4, background: "transparent", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}
+          >
+            <FilePlus size={13} />
+          </button>
+          <button
+            type="button"
+            title="New folder"
+            onClick={() => { setCreateMode("folder"); setCreateName(""); }}
+            style={{ padding: 4, borderRadius: 4, background: "transparent", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}
+          >
+            <FolderPlus size={13} />
+          </button>
+          <button
+            type="button"
+            title="Refresh"
+            onClick={refreshTree}
+            style={{ padding: 4, borderRadius: 4, background: "transparent", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}
+          >
+            <RefreshCw size={13} />
+          </button>
+          <button
+            type="button"
+            title="Collapse all"
+            onClick={() => setCollapseKey((k) => k + 1)}
+            style={{ padding: 4, borderRadius: 4, background: "transparent", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}
+          >
+            <ChevronsUpDown size={13} />
+          </button>
+          <button
+            type="button"
+            title="Open terminal"
+            onClick={() => setTerminalOpen(true)}
+            style={{ padding: 4, borderRadius: 4, background: "transparent", border: "none", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}
+          >
+            <TerminalSquare size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Inline create input */}
+      {createMode && (
+        <div
           style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 10,
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            color: "var(--ink-3)",
-            fontWeight: 600,
+            padding: "6px 8px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            flexShrink: 0,
           }}
         >
-          Files
-        </span>
-      </div>
+          <span style={{ fontSize: 12 }}>{createMode === "file" ? "📄" : "📁"}</span>
+          <input
+            ref={createInputRef}
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleCreate();
+              if (e.key === "Escape") { setCreateMode(null); setCreateName(""); }
+            }}
+            placeholder={createMode === "file" ? "filename.ext" : "folder-name"}
+            style={{
+              flex: 1,
+              background: "var(--panel-2)",
+              border: "1px solid var(--line)",
+              borderRadius: 4,
+              padding: "2px 6px",
+              fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+              color: "var(--ink-1)",
+              outline: "none",
+              minWidth: 0,
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void handleCreate()}
+            disabled={creating || !createName.trim()}
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 4,
+              background: "var(--accent)",
+              color: "white",
+              border: "none",
+              cursor: creating || !createName.trim() ? "not-allowed" : "pointer",
+              opacity: creating || !createName.trim() ? 0.5 : 1,
+              flexShrink: 0,
+            }}
+          >
+            {creating ? "…" : "✓"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setCreateMode(null); setCreateName(""); }}
+            style={{
+              fontSize: 11,
+              padding: "2px 6px",
+              borderRadius: 4,
+              background: "transparent",
+              color: "var(--ink-3)",
+              border: "1px solid var(--line)",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Tree content */}
       <div style={{ padding: "6px 4px", flex: 1 }}>
@@ -246,7 +419,7 @@ export function FileTree({ projectId }: { projectId: number }) {
         {state.status === "ok" && state.tree.length > 0 && (
           <ul className="list-none m-0 p-0 select-none">
             {state.tree.map((node) => (
-              <TreeNode key={node.path} node={node} depth={0} defaultOpen={false} onFileClick={handleFileClick} />
+              <TreeNode key={node.path} node={node} depth={0} defaultOpen={false} collapseKey={collapseKey} onFileClick={handleFileClick} />
             ))}
           </ul>
         )}
@@ -258,6 +431,13 @@ export function FileTree({ projectId }: { projectId: number }) {
         projectId={projectId}
         filePath={selectedFile}
         onDeleted={refreshTree}
+      />
+
+      <TerminalDialog
+        open={terminalOpen}
+        onOpenChange={setTerminalOpen}
+        projectId={projectId}
+        projectPath={projectPath}
       />
     </div>
   );

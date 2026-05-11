@@ -26,6 +26,8 @@ export type LMStudioChatOptions = {
   signal?: AbortSignal;
   /** Temperature. Defaults to 0.7 for chat. */
   temperature?: number;
+  /** Optional API key sent as Authorization: Bearer — required for cloud providers. */
+  apiKey?: string;
 };
 
 /** Event types emitted by {@link streamChatCompletion}. */
@@ -125,7 +127,10 @@ export async function* streamChatCompletion(
     res = await fetch(url, {
       method: "POST",
       signal: opts.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model: opts.model,
         messages: opts.messages,
@@ -137,7 +142,7 @@ export async function* streamChatCompletion(
     const msg = err instanceof Error ? err.message : String(err);
     yield {
       type: "error",
-      message: `Could not reach LM Studio at ${opts.baseUrl}. Is it running? (${msg})`,
+      message: `Could not reach AI provider at ${opts.baseUrl}. Is it running? (${msg})`,
     };
     return;
   }
@@ -146,7 +151,7 @@ export async function* streamChatCompletion(
     const body = await res.text().catch(() => "");
     yield {
       type: "error",
-      message: `LM Studio returned ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
+      message: `API returned ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
     };
     return;
   }
@@ -207,7 +212,11 @@ export async function* streamChatCompletion(
 
 function buildUrl(base: string): string {
   const trimmed = base.replace(/\/+$/, "");
-  return `${trimmed}/v1/chat/completions`;
+  // Cloud providers supply a base URL that already ends with /v1
+  // (e.g. https://api.openai.com/v1). Only append /v1 when it is missing
+  // so we never produce …/v1/v1/chat/completions.
+  const withV1 = trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+  return `${withV1}/chat/completions`;
 }
 
 function buildModelsUrl(base: string): string {

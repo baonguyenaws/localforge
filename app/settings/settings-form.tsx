@@ -68,8 +68,8 @@ export type SettingsFormHandle = {
 
 export const SettingsForm = forwardRef<
   SettingsFormHandle,
-  { initial: FormState; section?: "local" | "general" }
->(function SettingsForm({ initial, section = "local" }, ref) {
+  { initial: FormState; section?: "local" | "general"; onDirty?: () => void }
+>(function SettingsForm({ initial, section = "local", onDirty }, ref) {
   const [values, setValues] = useState<FormState>(initial);
   const [, startTransition] = useTransition();
   const [probe, setProbe] = useState<ModelsProbe>({ status: "idle" });
@@ -104,7 +104,7 @@ export const SettingsForm = forwardRef<
     PROVIDER_DESCRIPTORS[0];
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setSaved(false);
+    onDirty?.();
     setValues((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -264,7 +264,7 @@ export const SettingsForm = forwardRef<
                 scan={scan}
                 onSwitchProvider={(providerId, url) => {
                   const urlKey = urlKeyFor(providerId);
-                  setSaved(false);
+                  onDirty?.();
                   setValues((prev) => ({
                     ...prev,
                     provider: providerId,

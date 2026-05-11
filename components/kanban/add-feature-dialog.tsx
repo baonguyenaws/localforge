@@ -246,7 +246,7 @@ export function AddFeatureDialog({
               disabled={submitting}
               placeholder="What is this feature? Why does it matter?"
               maxLength={DESC_MAX}
-              rows={3}
+              rows={8}
               className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
@@ -267,7 +267,7 @@ export function AddFeatureDialog({
               disabled={submitting}
               placeholder="How do we know this is done?"
               maxLength={DESC_MAX}
-              rows={3}
+              rows={8}
               className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>

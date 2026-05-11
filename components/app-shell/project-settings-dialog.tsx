@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
+import { Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +19,7 @@ import {
   getEnabledCloudModels,
   type EnabledCloudModel,
 } from "@/lib/cloud-providers";
+import { useShell } from "./shell-context";
 
 /**
  * Project-specific settings dialog (Feature #35).
@@ -127,11 +130,16 @@ export function ProjectSettingsDialog({
   const [maxConcurrentAgents, setMaxConcurrentAgents] = React.useState("");
   const [playwrightEnabled, setPlaywrightEnabled] = React.useState("");
   const [playwrightHeaded, setPlaywrightHeaded] = React.useState("");
+  const router = useRouter();
+  const { refreshProjects } = useShell();
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [probe, setProbe] = React.useState<ModelsProbe>({ status: "idle" });
   const [cloudModels, setCloudModels] = React.useState<EnabledCloudModel[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
   // Load cloud models from server when dialog opens
   React.useEffect(() => {
@@ -252,6 +260,33 @@ export function ProjectSettingsDialog({
     };
   }, [open, data, activeProvider, effectiveUrl]);
 
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}?removeFiles=true`, {
+        method: "DELETE",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+      await refreshProjects();
+      onOpenChange(false);
+      router.push("/");
+      router.refresh();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete project",
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setSubmitting(true);
@@ -322,6 +357,7 @@ export function ProjectSettingsDialog({
         if (!o) onOpenChange(false);
       }}
       labelledBy="project-settings-title"
+      className="max-w-3xl"
     >
       <DialogCloseButton onClick={() => onOpenChange(false)} />
       <DialogHeader>
@@ -538,24 +574,99 @@ export function ProjectSettingsDialog({
             </p>
           )}
         </DialogBody>
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-            data-testid="project-settings-close"
-          >
-            Close
-          </Button>
-          <Button
-            type="submit"
-            disabled={loading || submitting}
-            data-testid="project-settings-save"
-          >
-            {submitting ? "Saving…" : "Save settings"}
-          </Button>
+        <DialogFooter className="sm:justify-between">
+          {/* Left side: delete project affordance */}
+          {!confirmingDelete && (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                setDeleteError(null);
+                setConfirmingDelete(true);
+              }}
+              disabled={submitting || deleting}
+              data-testid="project-settings-delete"
+              className="sm:mr-auto"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              Delete project
+            </Button>
+          )}
+          {confirmingDelete && (
+            <div
+              data-testid="project-settings-delete-confirm"
+              className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center"
+            >
+              <p className="text-sm text-destructive">
+                Delete <span className="font-medium">{projectName}</span> and its folder from disk? This cannot be undone.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setConfirmingDelete(false);
+                    setDeleteError(null);
+                  }}
+                  disabled={deleting}
+                  data-testid="project-settings-delete-cancel"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  data-testid="project-settings-delete-confirm-button"
+                >
+                  {deleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Deleting…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      Yes, delete
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+          {!confirmingDelete && (
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={submitting}
+                data-testid="project-settings-close"
+              >
+                Close
+              </Button>
+              <Button
+                type="submit"
+                disabled={loading || submitting}
+                data-testid="project-settings-save"
+              >
+                {submitting ? "Saving…" : "Save settings"}
+              </Button>
+            </div>
+          )}
         </DialogFooter>
+        {deleteError && (
+          <div className="border-t border-border px-6 py-2">
+            <p
+              role="alert"
+              data-testid="project-settings-delete-error"
+              className="text-sm text-destructive"
+            >
+              {deleteError}
+            </p>
+          </div>
+        )}
       </form>
     </Dialog>
   );

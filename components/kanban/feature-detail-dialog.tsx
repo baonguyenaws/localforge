@@ -1,12 +1,16 @@
 "use client";
 
 import * as React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ChevronLeft,
   ChevronRight,
   Images,
   Loader2,
   Link2,
+  MessageSquare,
+  Send,
   TerminalSquare,
   Trash2,
   X as XIcon,
@@ -197,6 +201,15 @@ export function FeatureDetailDialog({
   const [logsLoading, setLogsLoading] = React.useState(false);
   const [logsError, setLogsError] = React.useState<string | null>(null);
 
+  // Chat with AI about this feature
+  type ChatMessage = { role: "user" | "assistant"; content: string };
+  const [chatHistory, setChatHistory] = React.useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = React.useState("");
+  const [chatStreaming, setChatStreaming] = React.useState(false);
+  const [chatError, setChatError] = React.useState<string | null>(null);
+  const chatScrollRef = React.useRef<HTMLDivElement>(null);
+  const chatInputRef = React.useRef<HTMLTextAreaElement>(null);
+
   /**
    * Feature #79: screenshot-gallery lightbox.
    *
@@ -222,6 +235,9 @@ export function FeatureDetailDialog({
   const [deleting, setDeleting] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
+  // Tab state: "input" = editable fields, "output" = screenshots/logs/chat
+  const [activeTab, setActiveTab] = React.useState<"input" | "output">("input");
+
   React.useEffect(() => {
     if (!open || featureId == null) return;
     let cancelled = false;
@@ -231,6 +247,12 @@ export function FeatureDetailDialog({
     setLogs([]);
     setLogsError(null);
     setLogsLoading(true);
+    // Always reset chat state when opening a feature dialog.
+    setChatHistory([]);
+    setChatInput("");
+    setChatError(null);
+    // Always open on the Input tab when switching features.
+    setActiveTab("input");
     // Always start with the destructive flow collapsed. If the user previously
     // armed delete-confirmation and then closed the dialog, reopening should
     // not still be armed.
@@ -299,8 +321,21 @@ export function FeatureDetailDialog({
       }
     }
 
+    async function loadChatHistory(id: number) {
+      try {
+        const res = await fetch(`/api/features/${id}/chat`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { messages: ChatMessage[] };
+        if (cancelled) return;
+        setChatHistory(data.messages ?? []);
+      } catch {
+        // Non-fatal — chat just starts empty if the fetch fails.
+      }
+    }
+
     load(featureId);
     loadLogs(featureId);
+    loadChatHistory(featureId);
     return () => {
       cancelled = true;
     };
@@ -406,6 +441,84 @@ export function FeatureDetailDialog({
   const closeLightbox = React.useCallback(() => {
     setLightboxIndex(null);
   }, []);
+
+  // Scroll chat history container to bottom whenever history changes or a new delta arrives.
+  // We scroll the container directly (not scrollIntoView) so the outer dialog
+  // scroll wrapper is not affected.
+  React.useEffect(() => {
+    const el = chatScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatHistory]);
+
+  async function handleChatSubmit() {
+    const trimmed = chatInput.trim();
+    if (!trimmed || chatStreaming || !feature) return;
+
+    const userMsg: ChatMessage = { role: "user", content: trimmed };
+    const nextHistory = [...chatHistory, userMsg];
+    setChatHistory(nextHistory);
+    setChatInput("");
+    setChatError(null);
+    setChatStreaming(true);
+
+    // Placeholder for the assistant reply that we'll build up as deltas arrive.
+    let assistantText = "";
+    setChatHistory([...nextHistory, { role: "assistant", content: "" }]);
+
+    try {
+      const res = await fetch(`/api/features/${feature.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: trimmed,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `Request failed (${res.status})`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6);
+          if (json === "[DONE]") break;
+          let evt: { type: string; content?: string; message?: string };
+          try {
+            evt = JSON.parse(json) as typeof evt;
+          } catch {
+            continue;
+          }
+          if (evt.type === "delta" && typeof evt.content === "string") {
+            assistantText += evt.content;
+            setChatHistory([...nextHistory, { role: "assistant", content: assistantText }]);
+          } else if (evt.type === "error") {
+            throw new Error(evt.message ?? "Unknown error from AI");
+          }
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setChatError(msg);
+      // Remove the empty assistant placeholder on error.
+      setChatHistory(nextHistory);
+    } finally {
+      setChatStreaming(false);
+      // Restore focus to the input.
+      chatInputRef.current?.focus();
+    }
+  }
 
   // Feature #79: keyboard navigation inside the lightbox.
   //   Esc        — close the lightbox (NOT the parent dialog)
@@ -611,6 +724,35 @@ export function FeatureDetailDialog({
                 : "Feature details"}
             </DialogTitle>
           </DialogHeader>
+
+          {/* Tab bar */}
+          <div className="flex border-b border-border px-6">
+            <button
+              type="button"
+              data-testid="feature-detail-tab-input"
+              onClick={() => setActiveTab("input")}
+              className={`mr-4 pb-2 pt-3 text-sm font-medium transition-colors focus-visible:outline-none ${
+                activeTab === "input"
+                  ? "border-b-2 border-primary text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Input
+            </button>
+            <button
+              type="button"
+              data-testid="feature-detail-tab-output"
+              onClick={() => setActiveTab("output")}
+              className={`mr-4 pb-2 pt-3 text-sm font-medium transition-colors focus-visible:outline-none ${
+                activeTab === "output"
+                  ? "border-b-2 border-primary text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Output
+            </button>
+          </div>
+
           <DialogBody className="space-y-4">
             {loading && (
               <p
@@ -623,6 +765,9 @@ export function FeatureDetailDialog({
 
             {!loading && feature && (
               <>
+                {/* ── INPUT TAB ── */}
+                {activeTab === "input" && (
+                <div className="space-y-4">
                 <div className="space-y-1.5">
                   <label
                     htmlFor="feature-detail-title-input"
@@ -667,7 +812,7 @@ export function FeatureDetailDialog({
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     disabled={saving}
-                    rows={4}
+                    rows={8}
                     maxLength={DESC_MAX}
                     className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -686,7 +831,7 @@ export function FeatureDetailDialog({
                     value={acceptanceCriteria}
                     onChange={(e) => setAcceptanceCriteria(e.target.value)}
                     disabled={saving}
-                    rows={3}
+                    rows={8}
                     maxLength={DESC_MAX}
                     className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -830,13 +975,14 @@ export function FeatureDetailDialog({
                   )}
                 </div>
 
-                {/* Feature #79: screenshot gallery. Renders a thumbnail grid
-                    of every screenshot captured during agent runs. Clicking a
-                    thumbnail opens a lightbox with prev/next navigation and
-                    Esc-to-close keyboard support. When there are no
-                    screenshots yet we still render the section header with a
-                    muted empty state so users know where the gallery will
-                    appear once tests run. */}
+                </div>
+                )}
+
+                {/* ── OUTPUT TAB ── */}
+                {activeTab === "output" && (
+                <div className="space-y-4">
+
+                {/* Feature #79: screenshot gallery. */}
                 <div
                   className="space-y-2"
                   data-testid="feature-detail-screenshots-section"
@@ -957,6 +1103,128 @@ export function FeatureDetailDialog({
                     </div>
                   )}
                 </div>
+
+                {/* AI Chat section */}
+                <div className="space-y-2 pb-2" data-testid="feature-detail-chat-section">
+                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                    Chat with AI
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Ask the AI anything about this feature. It has full context of the title,
+                    description, acceptance criteria, and agent activity.
+                  </p>
+
+                  {/* Message history */}
+                  {chatHistory.length > 0 && (
+                    <div
+                      ref={chatScrollRef}
+                      data-testid="feature-detail-chat-history"
+                      className="max-h-72 overflow-y-auto rounded-md border border-border bg-muted/20 p-3 space-y-3"
+                    >
+                      {chatHistory.map((msg, idx) => (
+                        <div
+                          key={idx}
+                          className={`flex ${
+                            msg.role === "user" ? "justify-end" : "justify-start"
+                          }`}
+                        >
+                          <div
+                            className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                              msg.role === "user"
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted border border-border text-foreground"
+                            }`}
+                          >
+                            {msg.content === "" && chatStreaming && idx === chatHistory.length - 1 ? (
+                              <span className="inline-flex items-center gap-1 text-muted-foreground">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                Thinking…
+                              </span>
+                            ) : msg.role === "assistant" ? (
+                              <div className="break-words text-sm">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{
+                                    p: ({ children }) => <div className="mb-2 last:mb-0">{children}</div>,
+                                    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                                    em: ({ children }) => <em className="italic">{children}</em>,
+                                    ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-0.5">{children}</ul>,
+                                    ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-0.5">{children}</ol>,
+                                    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                                    code: ({ inline, children }: { inline?: boolean; children?: React.ReactNode }) =>
+                                      inline ? (
+                                        <code className="rounded bg-black/20 px-1 py-0.5 font-mono text-[11px]">{children}</code>
+                                      ) : (
+                                        <pre className="mb-2 overflow-x-auto rounded bg-black/20 p-2 font-mono text-[11px] leading-relaxed"><code>{children}</code></pre>
+                                      ),
+                                    blockquote: ({ children }) => <blockquote className="mb-2 border-l-2 border-current/40 pl-3 opacity-80">{children}</blockquote>,
+                                    h1: ({ children }) => <h1 className="mb-1 text-base font-semibold">{children}</h1>,
+                                    h2: ({ children }) => <h2 className="mb-1 text-sm font-semibold">{children}</h2>,
+                                    h3: ({ children }) => <h3 className="mb-1 text-sm font-medium">{children}</h3>,
+                                    a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 opacity-80 hover:opacity-100">{children}</a>,
+                                  }}
+                                >
+                                  {msg.content}
+                                </ReactMarkdown>
+                              </div>
+                            ) : (
+                              <span className="whitespace-pre-wrap break-words">{msg.content}</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {chatError && (
+                    <p
+                      role="alert"
+                      data-testid="feature-detail-chat-error"
+                      className="text-xs text-destructive"
+                    >
+                      {chatError}
+                    </p>
+                  )}
+
+                  {/* Input area */}
+                  <div className="flex items-end gap-2">
+                    <textarea
+                      ref={chatInputRef}
+                      data-testid="feature-detail-chat-input"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleChatSubmit();
+                        }
+                      }}
+                      disabled={chatStreaming}
+                      placeholder="Ask about this feature… (Enter to send, Shift+Enter for new line)"
+                      rows={2}
+                      className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void handleChatSubmit()}
+                      disabled={chatStreaming || !chatInput.trim()}
+                      data-testid="feature-detail-chat-submit"
+                      className="shrink-0"
+                    >
+                      {chatStreaming ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Send className="h-4 w-4" aria-hidden="true" />
+                      )}
+                      <span className="sr-only">Send</span>
+                    </Button>
+                  </div>
+                </div>
+
+                </div>
+                )}
               </>
             )}
 
@@ -970,107 +1238,118 @@ export function FeatureDetailDialog({
               </p>
             )}
           </DialogBody>
-          <DialogFooter className="sm:justify-between">
-            {/* Left side: destructive delete affordance (Feature #46).
-                When the user clicks "Delete feature" the first time we swap
-                this region to a confirmation prompt instead of deleting
-                immediately, satisfying the "double-action" requirement. */}
-            {feature && !confirmingDelete && (
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => {
-                  setDeleteError(null);
-                  setConfirmingDelete(true);
-                }}
-                disabled={saving || deleting || loading}
-                data-testid="feature-detail-delete"
-              >
-                <Trash2 className="h-4 w-4" aria-hidden="true" />
-                Delete feature
-              </Button>
-            )}
-            {feature && confirmingDelete && (
-              <div
-                data-testid="feature-detail-delete-confirm"
-                className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <p
-                  data-testid="feature-detail-delete-warning"
-                  className="text-sm text-destructive"
+
+          {/* Footer: Input tab shows Save/Delete; Output tab shows only Close */}
+          {activeTab === "input" ? (
+            <DialogFooter className="sm:justify-between">
+              {feature && !confirmingDelete && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => {
+                    setDeleteError(null);
+                    setConfirmingDelete(true);
+                  }}
+                  disabled={saving || deleting || loading}
+                  data-testid="feature-detail-delete"
                 >
-                  Delete this feature? This also removes its dependency
-                  links and cannot be undone.
-                </p>
-                <div className="flex gap-2">
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  Delete feature
+                </Button>
+              )}
+              {feature && confirmingDelete && (
+                <div
+                  data-testid="feature-detail-delete-confirm"
+                  className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <p
+                    data-testid="feature-detail-delete-warning"
+                    className="text-sm text-destructive"
+                  >
+                    Delete this feature? This also removes its dependency
+                    links and cannot be undone.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setConfirmingDelete(false);
+                        setDeleteError(null);
+                      }}
+                      disabled={deleting}
+                      data-testid="feature-detail-delete-cancel"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      data-testid="feature-detail-delete-confirm-button"
+                    >
+                      {deleting ? (
+                        <>
+                          <Loader2
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                          Deleting…
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          Yes, delete
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {!confirmingDelete && (
+                <div className="flex gap-2 sm:ml-auto">
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      setConfirmingDelete(false);
-                      setDeleteError(null);
-                    }}
-                    disabled={deleting}
-                    data-testid="feature-detail-delete-cancel"
+                    onClick={() => onOpenChange(false)}
+                    disabled={saving || deleting}
+                    data-testid="feature-detail-cancel"
                   >
-                    Cancel
+                    Close
                   </Button>
                   <Button
-                    type="button"
-                    variant="destructive"
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    data-testid="feature-detail-delete-confirm-button"
+                    type="submit"
+                    disabled={saving || loading || !feature || deleting}
+                    data-testid="feature-detail-save"
                   >
-                    {deleting ? (
+                    {saving ? (
                       <>
                         <Loader2
                           className="h-4 w-4 animate-spin"
                           aria-hidden="true"
                         />
-                        Deleting…
+                        Saving…
                       </>
                     ) : (
-                      <>
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        Yes, delete
-                      </>
+                      "Save changes"
                     )}
                   </Button>
                 </div>
-              </div>
-            )}
-            {!confirmingDelete && (
-              <div className="flex gap-2 sm:ml-auto">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => onOpenChange(false)}
-                  disabled={saving || deleting}
-                  data-testid="feature-detail-cancel"
-                >
-                  Close
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={saving || loading || !feature || deleting}
-                  data-testid="feature-detail-save"
-                >
-                  {saving ? (
-                    <>
-                      <Loader2
-                        className="h-4 w-4 animate-spin"
-                        aria-hidden="true"
-                      />
-                      Saving…
-                    </>
-                  ) : (
-                    "Save changes"
-                  )}
-                </Button>
-              </div>
-            )}
-          </DialogFooter>
+              )}
+            </DialogFooter>
+          ) : (
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                data-testid="feature-detail-cancel"
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          )}
           {deleteError && (
             <div className="border-t border-border px-6 py-2">
               <p
